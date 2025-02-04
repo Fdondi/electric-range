@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8" />
+  <title>EV Range MVP</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css"
+  />
+  <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+  <style>
+    #map {
+      height: 80vh;
+      width: 100%;
+    }
+    #params {
+      margin: 1rem;
+    }
+  </style>
+</head>
+<body>
+  <div id="params">
+    <label>Consumption (Wh/km):</label>
+    <input type="number" id="consumption" value="200" step="10" />
+    <label>Battery Size (kWh):</label>
+    <input type="number" id="batterySize" value="50" step="1" />
+    <label>Current Charge (kWh):</label>
+    <input type="number" id="currentCharge" value="30" step="1" />
+    <label>Regen Efficiency (0-1):</label>
+    <input type="number" id="regenEfficiency" value="0.5" step="0.1" />
+    <label>Car Weight (kg):</label>
+    <input type="number" id="weight" value="1500" step="100" />
+    <button id="calculateRange">Calculate Range</button>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- Import the generated wasm JS glue code -->
+  <script type="module">
+    import init, {rust_init, compute_range} from  "../rust-ev-calc/pkg/rust_ev_calc.js";
+
+    let map;
+    let startMarker;
+    let geoJsonLayer;
+
+    // Initialize after the WASM is loaded
+    async function initializeApp() {
+      try {
+      await init();
+      console.log("WASM module loaded successfully: ");
+      rust_init();
+
+      // Create Leaflet map
+      map = L.map("map").setView([47.3769, 8.5417], 13);
+      L.tileLayer(
+        "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        { attribution: "© OpenStreetMap contributors" }
+      ).addTo(map);
+      console.log("MAP loaded successfully");
+
+      // Click handler for setting start location
+      map.on("click", (e) => {
+        if (startMarker) {
+          map.removeLayer(startMarker);
+        }
+        startMarker = L.marker(e.latlng).addTo(map);
+        console.log("Start location set to: " + e.latlng);
+      });
+
+      document.getElementById("calculateRange").addEventListener("click", () => {
+        if (!startMarker) {
+          alert("Click on the map to set a start location.");
+          return;
+        }
+        calculateRange();
+      });
+    } catch (error) {
+      console.error("Error initializing app:", error);
+    }
+  }
+
+    async function calculateRange() {
+
+      const startLocation = startMarker.getLatLng();
+      const bounds = map.getBounds();
+      const boundingCoordinates = {
+          north_latitude : bounds.getNorth(),
+          south_latitude : bounds.getSouth(),
+          east_longitude : bounds.getEast(),
+          west_longitude : bounds.getWest(),
+      };
+      console.log("Calculating range for start location:", startLocation, " and view area: ", boundingCoordinates);
+      const consumptionWhPerKm = parseFloat(document.getElementById("consumption").value);
+      const batterySizeKWh = parseFloat(document.getElementById("batterySize").value);
+      const currentChargeKWh = parseFloat(document.getElementById("currentCharge").value);
+      const regenEfficiency = parseFloat(document.getElementById("regenEfficiency").value);
+      const weight = parseFloat(document.getElementById("weight").value);
+
+      const params = {
+        consumption_wh_per_km: consumptionWhPerKm,
+        battery_size_kwh: batterySizeKWh,
+        current_charge_kwh: currentChargeKWh,
+        regen_efficiency: regenEfficiency,
+        weight: weight,
+        start_location: startLocation,
+        view_area: boundingCoordinates
+      };
+
+      // Convert to JSON string and send to Rust
+      const result = await Promise.resolve(compute_range(JSON.stringify(params)));
+      console.info("Result from Rust:", result);
+
+      // This result is a GeoJSON FeatureCollection
+      displayGeoJSON(result);
+    }
+
+    function displayGeoJSON(geojsonData) {
+      if (geoJsonLayer) {
+        map.removeLayer(geoJsonLayer);
+      }
+      const geoObject = Object.fromEntries(geojsonData);
+      geoJsonLayer = L.geoJSON(geoObject, {
+        style: { color: "blue", fillColor: "blue", fillOpacity: 0.2 }
+      }).addTo(map);
+      map.fitBounds(geoJsonLayer.getBounds());
+    }
+
+    // Start
+    initializeApp();
+  </script>
+</body>
+</html>
