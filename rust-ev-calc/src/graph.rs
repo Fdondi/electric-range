@@ -116,7 +116,6 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
     let root_node_id = closest_point(&origin, &graph);
     log::info!("Closest found");
 
-
     /* I can't just expand a node, because I might get to the same node earlier from another one.
     Suppose I can get from root to A in 10, and from root to B in 5, but from A to C in 2 and from B to C in 8.
     Then expanding first B would get us to C in 13, but expanding A would get us to C in 12.
@@ -147,19 +146,27 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
         let elevation = get_elevation(&target_node.location);
         let consumption_wh = distance_m * consumption_wh_per_m; // TODO consider elevation
         if source_node_info.charge_wh < consumption_wh {
+            // Only save nodes that are just before we lose the charge
+            res.push(source_node_location.clone());
             log::info!("Charge {} not enough for consumption {}", source_node_info.charge_wh, consumption_wh);
             continue;
         }
         let remaining_charge_wh = source_node_info.charge_wh - consumption_wh;
-        res.push(target_node.location.clone());
         reached_nodes.insert(candidate_id, ReachedNode{elevation, charge_wh: remaining_charge_wh});
         log::info!("Saved node {} with charge {}; now {}", target_id, remaining_charge_wh, res.len());
         for connection in &target_node.connections {
             let connected_node_id = connection.end;
             let new_distance_m = distance_meters(&target_node.location, &graph.get(&connected_node_id).unwrap().location);
-            let time_to_reach = reach_time + new_distance_m / connection.maxspeed.unwrap_or(50) as f64;
+            let speed_km_h = connection.maxspeed.unwrap_or(30) as f64;
+            let speed_m_h = if speed_km_h < 30.0 {
+                log::info!("Speed {} too low", speed_km_h);
+                30000.0 // 30 km/h in m/h
+            } else {
+                speed_km_h * 1000.0
+            };
+            let time_to_reach = new_distance_m / speed_m_h;
             candidate_ids.push(Edge{start_id: target_id, end_id: connected_node_id}, reach_time + time_to_reach);
-            log::info!("Added candidate {} with time {}", connected_node_id, time_to_reach.0);
+            log::info!("Added candidate {} with time {}", connected_node_id, time_to_reach);
         }
     }
 

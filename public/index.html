@@ -16,6 +16,7 @@
     #params {
       margin: 1rem;
     }
+    img.huechange { filter: hue-rotate(150deg); }
   </style>
 </head>
 <body>
@@ -64,6 +65,7 @@
           map.removeLayer(startMarker);
         }
         startMarker = L.marker(e.latlng).addTo(map);
+        startMarker._icon.classList.add("huechange");
         console.log("Start location set to: " + e.latlng);
       });
 
@@ -120,7 +122,14 @@
       }
       const geoObject = Object.fromEntries(geojsonData);
       geoJsonLayer = L.geoJSON(geoObject, {
-        style: { color: "blue", fillColor: "blue", fillOpacity: 0.2 }
+        pointToLayer: (feature, latLng) => {
+          return L.circleMarker(latLng, {
+        radius: 5,
+        color: "blue",
+        fillColor: "blue",
+        fillOpacity: 0.2
+          });
+        }
       }).addTo(map);
       map.fitBounds(geoJsonLayer.getBounds());
     }
