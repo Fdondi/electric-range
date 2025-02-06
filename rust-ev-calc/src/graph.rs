@@ -7,6 +7,9 @@ use std::ops::Add;
 use crate::osm_fetcher::fetch_zurich_graph;
 use std::error::Error;
 use crate::types::{Location, BoundingCoordinates, OsmGraph, OsmNodeId};
+use std::collections::{HashSet, HashMap};
+use std::cmp::Reverse;
+use rstar::{RTree, RTreeObject, AABB, PointDistance};
 
 struct ReachedNode {
     elevation: f64,
@@ -81,6 +84,25 @@ struct Edge {
     end_id: OsmNodeId,
 }
 
+// Implement RTreeObject (to define a bounding box, even for points)
+impl RTreeObject for Location {
+    type Envelope = AABB<[f64; 2]>;
+
+    fn envelope(&self) -> Self::Envelope {
+        AABB::from_point([self.latitude, self.longitude])
+    }
+}
+
+// Implement PointDistance to use Haversine instead of Euclidean
+impl PointDistance for Location {
+    fn distance_2(&self, point: &[f64; 2]) -> f64 {
+        let point_location = Location { latitude: point[0], longitude: point[1] };
+        let d = distance_meters(self, &point_location);
+        d * d // Return squared distance (since `rstar` expects squared values)
+    }
+}
+
+
 fn distance_meters(a: &Location, b: &Location) -> f64 {
     let ap = haversine_rs::point::Point{ latitude: a.latitude, longitude: a.longitude };
     let bp = haversine_rs::point::Point{ latitude: b.latitude, longitude: b.longitude };
@@ -123,43 +145,63 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
     */
 
     let mut res = Vec::new();
+    let mut reached_from = HashMap::new();
+    let mut tree: RTree<Location> = RTree::new(); // To check if points are too close to be distinct
+    tree.insert(origin.clone());
+    let search_radius = 30.0; // meters
 
-    let mut reached_nodes = std::collections::HashMap::new();
+    let mut reached_nodes = HashSet::new();
     let origin_node_id = 0;  // Invalid ID 
-    reached_nodes.insert(origin_node_id, ReachedNode{elevation: get_elevation(&origin), charge_wh: initial_charge_wh});
+    reached_nodes.insert(origin_node_id); //, ReachedNode{elevation: get_elevation(&origin), charge_wh: initial_charge_wh});
     // Priority queue for next points to visit
     let mut candidate_ids = PriorityQueue::new();
-    candidate_ids.push(Edge{start_id: origin_node_id, end_id: root_node_id}, Reverse(OrderedFloat(0.0)));
+    candidate_ids.push(Edge{start_id: origin_node_id, end_id: root_node_id}, OrderedFloat(initial_charge_wh));
 
     let mut closest_end_distance_m = std::f64::INFINITY;
+    let mut closest_end_node_id = None;
 
-    while let Some((Edge { start_id: source_id, end_id: candidate_id }, reach_time)) = candidate_ids.pop() {
-        log::info!("Edge from {} to {} at time {}", source_id, candidate_id, reach_time.0);
-        if reached_nodes.contains_key(&candidate_id) {
+    while let Some((Edge { start_id: source_id, end_id: candidate_id }, OrderedFloat(current_charge_wh) )) = candidate_ids.pop() {
+        log::info!("Edge from {} to {} with charge {}", source_id, candidate_id, current_charge_wh);
+        if reached_nodes.contains(&candidate_id) {
             log::info!("Already reached node {}", candidate_id);
             continue;
         }
         
         let target_id = candidate_id;
         let source_node_location = if source_id != origin_node_id { &graph.get(&source_id).unwrap().location } else {origin};
-        let source_node_info = reached_nodes.get(&source_id).unwrap();
+        // let source_node_info = reached_nodes.get(&source_id).unwrap();
         let target_node = graph.get(&target_id).unwrap();
         let distance_m = distance_meters(&source_node_location, &target_node.location);
         let elevation = get_elevation(&target_node.location);
         let consumption_wh = distance_m * consumption_wh_per_m; // TODO consider elevation
-        if source_node_info.charge_wh < consumption_wh {
+        // Check if the charge is enough to reach the target node
+        // If not, check the distance and save the closest failure to the beginning
+        if current_charge_wh < consumption_wh {
+            let found = tree
+                .locate_within_distance([target_node.location.latitude, target_node.location.longitude], search_radius * search_radius)
+                .next()
+                .is_some();
+            if found {
+                log::info!("Node {} too close to another one, ignoring for closest failure", source_id);
+                continue;
+            }
             let reached_distance_m = distance_meters(&source_node_location, &origin);
             if  reached_distance_m < closest_end_distance_m {
                 closest_end_distance_m = reached_distance_m;
+                closest_end_node_id = Some(source_id);
                 log::info!("New closest end distance: {}", closest_end_distance_m);
             }
-            log::info!("Charge {} not enough for consumption {}", source_node_info.charge_wh, consumption_wh);
+            log::info!("Charge {} not enough for consumption {}", current_charge_wh, consumption_wh);
             continue;
         }
+        // Node approved, save it
         res.push([source_node_location.clone(), target_node.location.clone()]);
-        let remaining_charge_wh = source_node_info.charge_wh - consumption_wh;
-        reached_nodes.insert(candidate_id, ReachedNode{elevation, charge_wh: remaining_charge_wh});
+        reached_from.insert(target_id, source_id);
+        tree.insert(target_node.location.clone());
+        let remaining_charge_wh = current_charge_wh - consumption_wh;
+        reached_nodes.insert(candidate_id); //, ReachedNode{elevation, charge_wh: remaining_charge_wh});
         log::info!("Saved node {} with charge {}; now {}", target_id, remaining_charge_wh, res.len());
+        // Add all connections of the reached target as future candidates
         for connection in &target_node.connections {
             let connected_node_id = connection.end;
             let new_distance_m = distance_meters(&target_node.location, &graph.get(&connected_node_id).unwrap().location);
@@ -171,7 +213,7 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
                 speed_km_h * 1000.0
             };
             let time_to_reach = new_distance_m / speed_m_h;
-            candidate_ids.push(Edge{start_id: target_id, end_id: connected_node_id}, Reverse(reach_time + time_to_reach));
+            candidate_ids.push(Edge{start_id: target_id, end_id: connected_node_id}, OrderedFloat(remaining_charge_wh));
             log::info!("Added candidate {} with time {}", connected_node_id, time_to_reach);
         }
     }
@@ -180,7 +222,20 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
 
     // Filter all points that are closer to the origin than the closest end point
     let filtered_res: Vec<_> = res.into_iter().filter(|[start, end]| f64::max(distance_meters(&origin, start), distance_meters(&origin, end)) > closest_end_distance_m).collect();
-
+    
+    /*
+    // Used to find how we got to a given point
+    let mut target_id = closest_end_node_id.unwrap().clone();
+    let mut target_location = &graph.get(&target_id).unwrap().location;
+    let mut filtered_res = Vec::new();
+    while target_id != root_node_id {
+        let source_id = reached_from.get(&target_id).unwrap().clone();
+        let source_location = &graph.get(&source_id).unwrap().location;
+        filtered_res.push([source_location.clone(), target_location.clone()]);
+        target_id = source_id;
+        target_location = source_location;
+    }
+    */
     log::info!("Remaining reachable_points outside the radius of {}: {}",closest_end_distance_m, filtered_res.len());
     Ok((closest_end_distance_m, filtered_res))
 }
