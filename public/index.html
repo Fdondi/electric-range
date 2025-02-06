@@ -109,9 +109,10 @@
       };
 
       // Convert to JSON string and send to Rust
-      const result = await Promise.resolve(compute_range(JSON.stringify(params)));
-      console.info("Result from Rust:", result);
+      const result_str = await Promise.resolve(compute_range(JSON.stringify(params)));
+      console.info("Result from Rust:", result_str);
 
+      const result = JSON.parse(result_str);
       // This result is a GeoJSON FeatureCollection
       displayGeoJSON(result);
     }
@@ -120,17 +121,7 @@
       if (geoJsonLayer) {
         map.removeLayer(geoJsonLayer);
       }
-      const geoObject = Object.fromEntries(geojsonData);
-      geoJsonLayer = L.geoJSON(geoObject, {
-        pointToLayer: (feature, latLng) => {
-          return L.circleMarker(latLng, {
-        radius: 5,
-        color: "blue",
-        fillColor: "blue",
-        fillOpacity: 0.2
-          });
-        }
-      }).addTo(map);
+      geoJsonLayer = L.geoJSON(geojsonData).addTo(map);
       map.fitBounds(geoJsonLayer.getBounds());
     }
 

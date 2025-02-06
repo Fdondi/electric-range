@@ -100,7 +100,7 @@ fn closest_point(point: &Location, graph: &OsmGraph) -> OsmNodeId {
     *closest_node_id.unwrap()
 }
 
-pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates, initial_charge_wh: f64, consumption_wh_per_m: f64) -> Result<Vec<Location>, Box<dyn Error>> {
+pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates, initial_charge_wh: f64, consumption_wh_per_m: f64) -> Result<(f64, Vec<[Location; 2]>), Box<dyn Error>> {
     log::info!("Called reachable_points");
     
     // Example fetch function for elevation (stub)
@@ -131,6 +131,8 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
     let mut candidate_ids = PriorityQueue::new();
     candidate_ids.push(Edge{start_id: origin_node_id, end_id: root_node_id}, OrderedFloat(0.0));
 
+    let mut closest_end_distance_m = std::f64::INFINITY;
+
     while let Some((Edge { start_id: source_id, end_id: candidate_id }, reach_time)) = candidate_ids.pop() {
         log::info!("Edge from {} to {} at time {}", source_id, candidate_id, reach_time.0);
         if reached_nodes.contains_key(&candidate_id) {
@@ -146,11 +148,15 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
         let elevation = get_elevation(&target_node.location);
         let consumption_wh = distance_m * consumption_wh_per_m; // TODO consider elevation
         if source_node_info.charge_wh < consumption_wh {
-            // Only save nodes that are just before we lose the charge
-            res.push(source_node_location.clone());
+            let reached_distance_m = distance_meters(&source_node_location, &origin);
+            if  reached_distance_m < closest_end_distance_m {
+                closest_end_distance_m = reached_distance_m;
+                log::info!("New closest end distance: {}", closest_end_distance_m);
+            }
             log::info!("Charge {} not enough for consumption {}", source_node_info.charge_wh, consumption_wh);
             continue;
         }
+        res.push([source_node_location.clone(), target_node.location.clone()]);
         let remaining_charge_wh = source_node_info.charge_wh - consumption_wh;
         reached_nodes.insert(candidate_id, ReachedNode{elevation, charge_wh: remaining_charge_wh});
         log::info!("Saved node {} with charge {}; now {}", target_id, remaining_charge_wh, res.len());
@@ -170,9 +176,13 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
         }
     }
 
-    log::info!("Completed reachable_points: {}", res.len());
+    log::info!("Completed reachable_points: {}; all points before {}", res.len(), closest_end_distance_m);
 
-    Ok(res)
+    // Filter all points that are closer to the origin than the closest end point
+    let filtered_res: Vec<_> = res.into_iter().filter(|[start, end]| f64::max(distance_meters(&origin, start), distance_meters(&origin, end)) > closest_end_distance_m).collect();
+
+    log::info!("Remaining reachable_points outside the radius of {}: {}",closest_end_distance_m, filtered_res.len());
+    Ok((closest_end_distance_m, filtered_res))
 }
 
 #[test]
