@@ -129,7 +129,7 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
     reached_nodes.insert(origin_node_id, ReachedNode{elevation: get_elevation(&origin), charge_wh: initial_charge_wh});
     // Priority queue for next points to visit
     let mut candidate_ids = PriorityQueue::new();
-    candidate_ids.push(Edge{start_id: origin_node_id, end_id: root_node_id}, OrderedFloat(0.0));
+    candidate_ids.push(Edge{start_id: origin_node_id, end_id: root_node_id}, Reverse(OrderedFloat(0.0)));
 
     let mut closest_end_distance_m = std::f64::INFINITY;
 
@@ -171,7 +171,7 @@ pub async fn reachable_points(origin: &Location, view_area: BoundingCoordinates,
                 speed_km_h * 1000.0
             };
             let time_to_reach = new_distance_m / speed_m_h;
-            candidate_ids.push(Edge{start_id: target_id, end_id: connected_node_id}, reach_time + time_to_reach);
+            candidate_ids.push(Edge{start_id: target_id, end_id: connected_node_id}, Reverse(reach_time + time_to_reach));
             log::info!("Added candidate {} with time {}", connected_node_id, time_to_reach);
         }
     }
