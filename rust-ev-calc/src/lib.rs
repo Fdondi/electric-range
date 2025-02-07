@@ -39,7 +39,7 @@ pub struct EVParams {
 
 #[wasm_bindgen]
 pub fn rust_init() {
-    console_log::init_with_level(Level::Debug).expect("error initializing logger");
+    console_log::init_with_level(Level::Error).expect("error initializing logger");
     log::info!("Logger initialized from library");
 }
 
