@@ -12,4 +12,4 @@ The server will then be available at `http://localhost:3000`
 ![Example result](example.png)
 
 The circle covers the area closer to the origign than any point where the car runs out of charge.
-The lines show all places reachable outside the circle. 
+The lines show all places reachable outside the circle.
